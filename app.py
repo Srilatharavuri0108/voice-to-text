@@ -1,7 +1,7 @@
 """
 Speech-to-Text Web Application
 Author: Senior Python Full Stack Developer
-Technologies: Python, Streamlit, SpeechRecognition, PyAudio, Google Speech Recognition API
+Technologies: Python, Streamlit, SpeechRecognition, Web Audio, Google Speech Recognition API
 """
 
 import io
@@ -24,7 +24,14 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, module="pydub")
 import streamlit as st
 import speech_recognition as sr
 
-# Lightweight audio libraries for ultra-fast startup
+# Universal browser microphone recorder (works on any laptop in Chrome/Edge/Safari without VS Code)
+try:
+    from streamlit_mic_recorder import mic_recorder
+    MIC_RECORDER_AVAILABLE = True
+except (ImportError, Exception):
+    MIC_RECORDER_AVAILABLE = False
+
+# Local hardware audio libraries
 try:
     import pyaudio
     PYAUDIO_AVAILABLE = True
@@ -115,13 +122,6 @@ st.markdown(
         animation: pulse-red 1.5s infinite;
     }
     
-    .status-processing {
-        background: rgba(245, 158, 11, 0.25);
-        color: #fbbf24;
-        border: 1px solid rgba(245, 158, 11, 0.5);
-        animation: pulse-amber 1.5s infinite;
-    }
-    
     .status-success {
         background: rgba(16, 185, 129, 0.25);
         color: #34d399;
@@ -132,10 +132,6 @@ st.markdown(
     @keyframes pulse-red {
         0%, 100% { transform: scale(1); opacity: 1; }
         50% { transform: scale(1.04); opacity: 0.85; }
-    }
-    @keyframes pulse-amber {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.65; }
     }
     
     /* Metric pill */
@@ -165,14 +161,10 @@ st.markdown(
 
 
 # ==============================================================================
-# 2. AUDIO RECORDER CORE ENGINE (PyAudio Native Hardware Controller)
+# 2. AUDIO ENGINE & HARDWARE RECORDER
 # ==============================================================================
 class PyAudioThreadRecorder:
-    """
-    Thread-safe microphone recorder using PyAudio.
-    Captures live audio frames at the hardware's native sample rate in a background
-    worker thread until explicitly stopped.
-    """
+    """Thread-safe microphone recorder using PyAudio for local desktop execution."""
     def __init__(self, chunk_size: int = 1024, channels: int = 1, device_index: Optional[int] = None):
         self.chunk_size = chunk_size
         self.channels = channels
@@ -185,7 +177,6 @@ class PyAudioThreadRecorder:
         self.error: Optional[str] = None
         self.rms_energy: float = 0.0
 
-        # Detect optimal native sample rate from the hardware microphone
         self.sample_rate = 44100
         if PYAUDIO_AVAILABLE:
             try:
@@ -200,9 +191,8 @@ class PyAudioThreadRecorder:
                 self.sample_rate = 44100
 
     def start(self):
-        """Starts audio capture in a background thread."""
         if not PYAUDIO_AVAILABLE:
-            self.error = "PyAudio is not installed or unavailable on this system."
+            self.error = "PyAudio is not installed or unavailable."
             return False
             
         self.frames = []
@@ -214,7 +204,6 @@ class PyAudioThreadRecorder:
         return True
 
     def _capture_worker(self):
-        """Worker loop reading chunks from the microphone hardware."""
         p = None
         stream = None
         try:
@@ -247,7 +236,6 @@ class PyAudioThreadRecorder:
                     pass
 
     def stop(self) -> Optional[bytes]:
-        """Stops audio capture, waits for worker thread, and returns PCM WAV bytes."""
         self.is_recording = False
         self.stop_time = time.time()
         if self.thread and self.thread.is_alive():
@@ -258,12 +246,9 @@ class PyAudioThreadRecorder:
         return self.get_wav_bytes()
 
     def get_wav_bytes(self) -> Optional[bytes]:
-        """Compiles captured audio frames into standard 16-bit PCM WAV bytes."""
         if not self.frames:
             return None
-        
         raw_pcm = b"".join(self.frames)
-        # Compute RMS audio energy
         try:
             num_shorts = len(raw_pcm) // 2
             if num_shorts > 0:
@@ -283,7 +268,6 @@ class PyAudioThreadRecorder:
 
     @property
     def duration(self) -> float:
-        """Returns the recording duration in seconds."""
         if self.start_time is None:
             return 0.0
         end = self.stop_time if self.stop_time else time.time()
@@ -337,10 +321,7 @@ def transcribe_audio_bytes(
 
 
 def convert_audio_to_wav(uploaded_file) -> Optional[bytes]:
-    """
-    Converts various audio formats (MP3, M4A, OGG, FLAC) to WAV PCM format using pydub.
-    If already WAV, returns the raw bytes directly.
-    """
+    """Converts uploaded audio files to WAV format using pydub."""
     uploaded_file.seek(0)
     filename = uploaded_file.name.lower()
     file_bytes = uploaded_file.read()
@@ -349,7 +330,7 @@ def convert_audio_to_wav(uploaded_file) -> Optional[bytes]:
         return file_bytes
 
     if not PYDUB_AVAILABLE:
-        st.error("Audio format conversion requires `pydub`. Please upload a standard `.wav` file.")
+        st.error("Audio conversion requires `pydub`. Please upload a standard `.wav` file.")
         return None
 
     try:
@@ -363,7 +344,6 @@ def convert_audio_to_wav(uploaded_file) -> Optional[bytes]:
         return None
 
 
-# Helper to list hardware microphones
 def get_available_microphones() -> Dict[str, Optional[int]]:
     """Returns a dictionary of microphone names mapped to device indices."""
     devices = {"Default System Microphone": None}
@@ -403,11 +383,12 @@ if "history" not in st.session_state:
     st.session_state["history"] = []
 if "metrics" not in st.session_state:
     st.session_state["metrics"] = {"duration": 0.0, "latency": 0.0, "word_count": 0, "char_count": 0}
+if "last_processed_audio_id" not in st.session_state:
+    st.session_state["last_processed_audio_id"] = None
 if "last_browser_audio_bytes" not in st.session_state:
     st.session_state["last_browser_audio_bytes"] = None
 
 
-# Helper to update transcription state safely
 def set_transcription_result(text: str, source_label: str, duration: float, latency: float):
     words = len(text.split())
     chars = len(text)
@@ -460,35 +441,17 @@ with st.sidebar:
     language_code = language_options[selected_language_label]
 
     st.markdown("---")
-    st.markdown("### 🎙️ Audio Hardware")
-
-    # Microphone Selection
-    available_mics = get_available_microphones()
-    selected_mic_name = st.selectbox(
-        "Select Hardware Input",
-        options=list(available_mics.keys()),
-        index=0,
-        help="Choose the hardware microphone interface to record from."
-    )
-    selected_device_index = available_mics[selected_mic_name]
-
-    # Sensitivity Controls
-    st.markdown("---")
     st.markdown("### 🎚️ Sensitivity Tuning")
     
     dynamic_energy = st.checkbox("Dynamic Sensitivity", value=True, help="Dynamically adapts voice detection to room acoustic levels.")
     energy_threshold = st.slider("Energy Threshold", min_value=50, max_value=1500, value=300, step=50, help="Lower values detect soft whispers; higher values filter out background hums.")
 
     st.markdown("---")
-    # Health Status
     st.markdown("### 🩺 Diagnostic Status")
     col_d1, col_d2 = st.columns(2)
     with col_d1:
-        st.write("**PyAudio:**")
-        if PYAUDIO_AVAILABLE:
-            st.success("Installed")
-        else:
-            st.warning("Unavailable")
+        st.write("**Web Mic:**")
+        st.success("Supported")
     with col_d2:
         st.write("**Internet:**")
         st.success("Connected")
@@ -510,7 +473,7 @@ st.markdown(
         </div>
         <div>
             <span style="background: rgba(255,255,255,0.2); padding: 0.5rem 1rem; border-radius: 9999px; font-size: 0.85rem; font-weight: 600;">
-                ⚡ Fast • Accurate • Multi-Language
+                ⚡ Fast • Universal • Multi-Language
             </span>
         </div>
     </div>
@@ -518,127 +481,95 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Status Badge Indicator
 status_placeholder = st.empty()
-if st.session_state["is_recording"]:
-    status_placeholder.markdown(
-        """
-        <div style="margin-bottom: 1.2rem;">
-            <span class="status-badge status-recording">
-                🔴 RECORDING IN PROGRESS — Speak clearly into your microphone...
-            </span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-else:
-    status_placeholder.markdown(
-        """
-        <div style="margin-bottom: 1.2rem;">
-            <span class="status-badge status-idle">
-                🟢 SYSTEM READY — Choose an audio input method below to begin
-            </span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+status_placeholder.markdown(
+    """
+    <div style="margin-bottom: 1.2rem;">
+        <span class="status-badge status-idle">
+            🟢 SYSTEM READY — Click "Start Recording" below to speak
+        </span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ==============================================================================
 # 7. AUDIO CAPTURE MODES (TABS)
 # ==============================================================================
-tab_browser_mic, tab_live_mic, tab_upload = st.tabs([
-    "🎙️ Web Browser Microphone (Works on Cloud and Mobile)",
-    "💻 Local Desktop Microphone (PyAudio - Local Machine Only)",
+tab_universal, tab_browser_widget, tab_local_hardware, tab_upload = st.tabs([
+    "🔴 Start / Stop Recording (Works on Any Laptop)",
+    "🌐 Browser Audio Widget",
+    "💻 Local Desktop Mic (PyAudio)",
     "📁 Upload Audio File"
 ])
 
 
 # ------------------------------------------------------------------------------
-# TAB 1: Live Hardware Microphone with Dedicated Start/Stop Buttons
+# TAB 1: UNIVERSAL START/STOP RECORDING (WORKS ON ANY LAPTOP WITHOUT VS CODE)
 # ------------------------------------------------------------------------------
-with tab_live_mic:
-    st.info("ℹ️ **Cloud Note:** When using this app over the web (e.g. on Streamlit Cloud), please use the **Web Browser Microphone** tab above so your browser can capture your voice. This tab accesses local server hardware.")
-    st.markdown("#### Record Voice via Computer Microphone")
-    st.caption("Click **Start Recording** to begin capturing voice, speak a complete sentence, and click **Stop Recording** to transcribe.")
+with tab_universal:
+    st.markdown("#### Record Voice via Laptop Microphone")
+    st.caption("Works on **any laptop**, whether running in the cloud or locally, without requiring VS Code!")
 
-    btn_col1, btn_col2, btn_col3 = st.columns([1.5, 1.5, 3])
+    st.markdown(
+        """
+        <div style="background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 12px; padding: 1.2rem; margin-bottom: 1.2rem;">
+            <b>👉 How to use:</b><br>
+            1. Click the button below to <b>Start Recording</b>.<br>
+            2. When Chrome/Edge prompts for microphone access, click <b>Allow</b>.<br>
+            3. Speak clearly for a few seconds.<br>
+            4. Click <b>Stop Recording</b>. Your speech will be transcribed automatically!
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-    with btn_col1:
-        # START RECORDING BUTTON
-        start_disabled = st.session_state["is_recording"] or not PYAUDIO_AVAILABLE
-        if st.button("🔴 Start Recording", type="primary", use_container_width=True, disabled=start_disabled):
-            st.session_state["last_error"] = None
-            recorder = PyAudioThreadRecorder(
-                chunk_size=1024,
-                channels=1,
-                device_index=selected_device_index
-            )
-            success = recorder.start()
-            if success:
-                st.session_state["recorder"] = recorder
-                st.session_state["is_recording"] = True
-                st.rerun()
-            else:
-                st.error(f"Failed to start microphone: {recorder.error}")
-
-    with btn_col2:
-        # STOP RECORDING BUTTON
-        stop_disabled = not st.session_state["is_recording"]
-        if st.button("⏹️ Stop Recording", type="secondary", use_container_width=True, disabled=stop_disabled):
-            if st.session_state["recorder"]:
-                recorder = st.session_state["recorder"]
-                with st.spinner("Finalizing audio stream and transcribing..."):
-                    wav_bytes = recorder.stop()
-                    duration = recorder.duration
-                    rms = recorder.rms_energy
-                    st.session_state["is_recording"] = False
-                    st.session_state["recorder"] = None
-
-                    if wav_bytes and len(wav_bytes) > 2000:
-                        st.session_state["audio_bytes"] = wav_bytes
-
-                        # Check if audio is virtually silent
-                        if rms < 80.0:
-                            st.warning(f"⚠️ Low audio signal detected (Energy level: {rms:.1f}). If no text appears, make sure your microphone volume is turned up in Windows Sound Settings.")
-
-                        text, err, latency = transcribe_audio_bytes(
-                            wav_bytes,
-                            language_code=language_code,
-                            energy_threshold=energy_threshold,
-                            dynamic_energy=dynamic_energy
-                        )
-                        if text:
-                            set_transcription_result(text, "Hardware Mic", duration, latency)
-                            st.toast("✅ Voice successfully transcribed!")
-                        else:
-                            st.session_state["last_error"] = err
-                    else:
-                        st.session_state["last_error"] = "Recording was too short or empty. Please speak for at least 1-2 seconds."
-                st.rerun()
-
-    with btn_col3:
-        if st.session_state["is_recording"]:
-            rec_obj = st.session_state.get("recorder")
-            cur_duration = rec_obj.duration if rec_obj else 0.0
-            st.warning(f"🎙️ Microphone is recording! Speak now, then click 'Stop Recording' to produce text.")
-        else:
-            st.info("💡 Instructions: 1. Click 'Start Recording' ➔ 2. Speak your words ➔ 3. Click 'Stop Recording'.")
-
-    # If PyAudio is missing, show helpful note
-    if not PYAUDIO_AVAILABLE:
-        st.warning(
-            "⚠️ PyAudio is not installed in this environment. You can use the **Web Browser Microphone** tab "
-            "which runs directly in any browser without needing PyAudio, or install PyAudio via `pip install pyaudio`."
+    # Universal mic recorder component with dedicated Start / Stop button states
+    if MIC_RECORDER_AVAILABLE:
+        audio_record = mic_recorder(
+            start_prompt="🔴 Click to Start Recording",
+            stop_prompt="⏹️ Click to Stop Recording",
+            just_once=True,
+            use_container_width=True,
+            format="wav",
+            key="universal_mic_recorder"
         )
 
+        if audio_record is not None and "bytes" in audio_record:
+            audio_bytes = audio_record["bytes"]
+            audio_id = audio_record.get("id")
+
+            # Check if this is a fresh recording
+            if audio_id != st.session_state.get("last_processed_audio_id") and len(audio_bytes) > 2000:
+                st.session_state["last_processed_audio_id"] = audio_id
+                st.session_state["audio_bytes"] = audio_bytes
+
+                with st.spinner("Transcribing your speech with Google Speech Recognition..."):
+                    text, err, latency = transcribe_audio_bytes(
+                        audio_bytes,
+                        language_code=language_code,
+                        energy_threshold=energy_threshold,
+                        dynamic_energy=dynamic_energy
+                    )
+                    calc_duration = round(len(audio_bytes) / (audio_record.get("sample_rate", 16000) * 2), 2)
+                    if text:
+                        set_transcription_result(text, "Live Mic (Start/Stop)", calc_duration, latency)
+                        st.toast("✅ Voice successfully transcribed!")
+                        st.rerun()
+                    else:
+                        st.session_state["last_error"] = err
+                        st.rerun()
+    else:
+        st.warning("`streamlit-mic-recorder` component is loading...")
+
 
 # ------------------------------------------------------------------------------
-# TAB 2: Web Browser Microphone (HTML5 Audio Input)
+# TAB 2: Native Streamlit Audio Input Widget
 # ------------------------------------------------------------------------------
-with tab_browser_mic:
-    st.markdown("#### Record Voice Directly in Your Web Browser")
-    st.caption("Uses HTML5 browser audio. Works on all browsers and devices.")
+with tab_browser_widget:
+    st.markdown("#### Record Voice via Native Streamlit Widget")
+    st.caption("Uses the built-in HTML5 browser audio player with visual waveforms.")
 
     if hasattr(st, "audio_input"):
         browser_audio = st.audio_input("Record Speech via Browser Microphone")
@@ -659,35 +590,76 @@ with tab_browser_mic:
                         dynamic_energy=dynamic_energy
                     )
                     if text:
-                        set_transcription_result(text, "Browser Mic", round(len(audio_bytes) / 32000.0, 2), latency)
-                        st.toast("✅ Browser speech transcribed!")
-                        st.rerun()
-                    else:
-                        st.session_state["last_error"] = err
-                        st.rerun()
-
-            # Manual re-transcribe button
-            if st.button("✨ Re-transcribe Browser Recording", type="primary", key="btn_transcribe_browser"):
-                with st.spinner("Transcribing browser audio..."):
-                    text, err, latency = transcribe_audio_bytes(
-                        audio_bytes,
-                        language_code=language_code,
-                        energy_threshold=energy_threshold,
-                        dynamic_energy=dynamic_energy
-                    )
-                    if text:
-                        set_transcription_result(text, "Browser Mic", round(len(audio_bytes) / 32000.0, 2), latency)
+                        set_transcription_result(text, "Browser Widget", round(len(audio_bytes) / 32000.0, 2), latency)
                         st.toast("✅ Browser speech transcribed!")
                         st.rerun()
                     else:
                         st.session_state["last_error"] = err
                         st.rerun()
     else:
-        st.info("💡 In-browser recording widget requires Streamlit 1.40+. Please use the **Live Hardware Microphone** tab above!")
+        st.info("Browser audio input widget requires Streamlit 1.40+.")
 
 
 # ------------------------------------------------------------------------------
-# TAB 3: Audio File Upload
+# TAB 3: Local Hardware Microphone (PyAudio - For local testing)
+# ------------------------------------------------------------------------------
+with tab_local_hardware:
+    st.info("ℹ️ **Local Machine Note:** This tab directly accesses the local computer's sound card via PyAudio. When running over the web (Streamlit Cloud), use Tab 1 above.")
+    st.markdown("#### Record Voice via Local Sound Card")
+
+    available_mics = get_available_microphones()
+    selected_mic_name = st.selectbox(
+        "Select Local Hardware Input",
+        options=list(available_mics.keys()),
+        index=0,
+        help="Choose the hardware sound interface."
+    )
+    selected_device_index = available_mics[selected_mic_name]
+
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        start_disabled = st.session_state["is_recording"] or not PYAUDIO_AVAILABLE
+        if st.button("🔴 Start Hardware Recording", type="primary", use_container_width=True, disabled=start_disabled):
+            st.session_state["last_error"] = None
+            recorder = PyAudioThreadRecorder(chunk_size=1024, channels=1, device_index=selected_device_index)
+            if recorder.start():
+                st.session_state["recorder"] = recorder
+                st.session_state["is_recording"] = True
+                st.rerun()
+            else:
+                st.error(f"Failed to start: {recorder.error}")
+
+    with col_btn2:
+        stop_disabled = not st.session_state["is_recording"]
+        if st.button("⏹️ Stop Hardware Recording", type="secondary", use_container_width=True, disabled=stop_disabled):
+            if st.session_state["recorder"]:
+                recorder = st.session_state["recorder"]
+                with st.spinner("Processing audio stream..."):
+                    wav_bytes = recorder.stop()
+                    duration = recorder.duration
+                    st.session_state["is_recording"] = False
+                    st.session_state["recorder"] = None
+
+                    if wav_bytes and len(wav_bytes) > 2000:
+                        st.session_state["audio_bytes"] = wav_bytes
+                        text, err, latency = transcribe_audio_bytes(
+                            wav_bytes,
+                            language_code=language_code,
+                            energy_threshold=energy_threshold,
+                            dynamic_energy=dynamic_energy
+                        )
+                        if text:
+                            set_transcription_result(text, "Hardware Mic", duration, latency)
+                            st.toast("✅ Transcribed!")
+                        else:
+                            st.session_state["last_error"] = err
+                    else:
+                        st.session_state["last_error"] = "Recording was too short or empty. On the web, please use Tab 1!"
+                st.rerun()
+
+
+# ------------------------------------------------------------------------------
+# TAB 4: Audio File Upload
 # ------------------------------------------------------------------------------
 with tab_upload:
     st.markdown("#### Transcribe Pre-Recorded Audio Files")
@@ -728,10 +700,10 @@ if st.session_state.get("last_error"):
     st.markdown("---")
     st.error(f"⚠️ **Notice:** {st.session_state['last_error']}")
     st.info("💡 **Quick Fixes:**\n"
-            "- Speak clearly directly towards the microphone.\n"
+            "- Speak clearly directly towards your laptop microphone.\n"
+            "- Make sure you clicked 'Allow' when the browser requested microphone access.\n"
             "- Speak for at least 1-2 seconds.\n"
-            "- Check Windows microphone privacy settings: *Settings > Privacy & Security > Microphone*.\n"
-            "- Verify that your internet connection is active.")
+            "- Check Windows microphone privacy settings: *Settings > Privacy & Security > Microphone*.")
 
 
 # ==============================================================================
@@ -853,6 +825,7 @@ with act_col2:
         st.session_state["audio_bytes"] = None
         st.session_state["last_error"] = None
         st.session_state["last_browser_audio_bytes"] = None
+        st.session_state["last_processed_audio_id"] = None
         st.session_state["metrics"] = {"duration": 0.0, "latency": 0.0, "word_count": 0, "char_count": 0}
         st.toast("🧹 Output cleared!")
         st.rerun()
