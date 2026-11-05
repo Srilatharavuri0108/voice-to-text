@@ -1,5 +1,6 @@
 # 🎙️ Speech-to-Text Converter Web Application
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/Srilatharavuri0108/voice-to-text)
 [![Deploy with Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://share.streamlit.io/deploy?repository=Srilatharavuri0108/voice-to-text&branch=main&mainModule=app.py)
 
 A complete, production-ready **Speech-to-Text Web Application** built with **Python**, **Streamlit**, **SpeechRecognition**, **PyAudio**, and the **Google Web Speech Recognition API**.
