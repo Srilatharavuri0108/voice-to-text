@@ -24,24 +24,17 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, module="pydub")
 import streamlit as st
 import speech_recognition as sr
 
-# Audio libraries for enhanced device & format support
+# Lightweight audio libraries for ultra-fast startup
 try:
     import pyaudio
     PYAUDIO_AVAILABLE = True
-except ImportError:
+except (ImportError, Exception):
     PYAUDIO_AVAILABLE = False
-
-try:
-    import sounddevice as sd
-    import numpy as np
-    SOUNDDEVICE_AVAILABLE = True
-except ImportError:
-    SOUNDDEVICE_AVAILABLE = False
 
 try:
     from pydub import AudioSegment
     PYDUB_AVAILABLE = True
-except ImportError:
+except (ImportError, Exception):
     PYDUB_AVAILABLE = False
 
 
