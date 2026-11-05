@@ -547,9 +547,9 @@ else:
 # ==============================================================================
 # 7. AUDIO CAPTURE MODES (TABS)
 # ==============================================================================
-tab_live_mic, tab_browser_mic, tab_upload = st.tabs([
-    "🎙️ Live Hardware Microphone (PyAudio)",
-    "🌐 Web Browser Microphone",
+tab_browser_mic, tab_live_mic, tab_upload = st.tabs([
+    "🎙️ Web Browser Microphone (Works on Cloud and Mobile)",
+    "💻 Local Desktop Microphone (PyAudio - Local Machine Only)",
     "📁 Upload Audio File"
 ])
 
@@ -558,6 +558,7 @@ tab_live_mic, tab_browser_mic, tab_upload = st.tabs([
 # TAB 1: Live Hardware Microphone with Dedicated Start/Stop Buttons
 # ------------------------------------------------------------------------------
 with tab_live_mic:
+    st.info("ℹ️ **Cloud Note:** When using this app over the web (e.g. on Streamlit Cloud), please use the **Web Browser Microphone** tab above so your browser can capture your voice. This tab accesses local server hardware.")
     st.markdown("#### Record Voice via Computer Microphone")
     st.caption("Click **Start Recording** to begin capturing voice, speak a complete sentence, and click **Stop Recording** to transcribe.")
 
